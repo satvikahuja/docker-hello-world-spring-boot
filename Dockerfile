@@ -6,16 +6,18 @@ WORKDIR /tmp
 COPY pom.xml /tmp/
 COPY src /tmp/src/
 
-# build the fat jar
-RUN mvn package
+# build the fat jar (skip tests to speed CI) and normalize name -> /tmp/app.jar
+RUN mvn -DskipTests package && \
+    JAR="$(ls target/*.jar | grep -v 'original' | head -n1)" && \
+    cp "$JAR" /tmp/app.jar
 
 # ---- runtime stage ----
-# use a stable, smaller JRE image (avoids flaky "manifests 11" pulls)
+# smaller, stable JRE image
 FROM eclipse-temurin:11-jre-jammy
 WORKDIR /data
 
-# copy the built jar from the builder stage
-COPY --from=maven_build /tmp/target/hello-world-0.1.0.jar /data/hello-world-0.1.0.jar
+# copy the normalized jar
+COPY --from=maven_build /tmp/app.jar /data/app.jar
 
 EXPOSE 8080
-ENTRYPOINT ["java","-jar","/data/hello-world-0.1.0.jar"]
+ENTRYPOINT ["java","-jar","/data/app.jar"]
