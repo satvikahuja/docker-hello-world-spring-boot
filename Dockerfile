@@ -1,27 +1,21 @@
-# Maven build container 
-
+# ---- build stage ----
 FROM maven:3.8.5-openjdk-11 AS maven_build
+WORKDIR /app
 
-COPY pom.xml /tmp/
+# Cache dependencies
+COPY pom.xml .
+RUN mvn -B -ntp -DskipTests dependency:go-offline
 
-COPY src /tmp/src/
+# Build sources
+COPY src ./src
+RUN mvn -B -ntp -DskipTests package
 
-WORKDIR /tmp/
-
-RUN mvn package
-
-#pull base image
-
+# ---- runtime stage ----
 FROM eclipse-temurin:11
+WORKDIR /data
 
-#maintainer 
-MAINTAINER dstar55@yahoo.com
-#expose port 8080
+# Copy *whatever* jar Maven built and give it a stable name
+COPY --from=maven_build /app/target/*.jar /data/app.jar
+
 EXPOSE 8080
-
-#default command
-CMD java -jar /data/hello-world-0.1.0.jar
-
-#copy hello world to docker image from builder image
-
-COPY --from=maven_build /tmp/target/hello-world-0.1.0.jar /data/hello-world-0.1.0.jar
+CMD ["java", "-jar", "/data/app.jar"]
