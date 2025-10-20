@@ -1,59 +1,86 @@
-node {
-    // reference to maven
-    // ** NOTE: This 'maven-3.6.1' Maven tool must be configured in the Jenkins Global Configuration.   
-    def mvnHome = tool 'maven-3.8.5'
+pipeline {
+  agent any
 
-    // holds reference to docker image
-    def dockerImage
-    // ip address of the docker private repository(nexus)
-    
-    def dockerRepoUrl = "localhost:8083"
-    def dockerImageName = "hello-world-java"
-    def dockerImageTag = "${dockerRepoUrl}/${dockerImageName}:${env.BUILD_NUMBER}"
-    
-    stage('Clone Repo') { // for display purposes
-      // Get some code from a GitHub repository
-      git 'https://github.com/dstar55/docker-hello-world-spring-boot.git'
-      // Get the Maven tool.
-      // ** NOTE: This 'maven-3.6.1' Maven tool must be configured
-      // **       in the global configuration.           
-      mvnHome = tool 'maven-3.8.5'
-    }    
-  
-    stage('Build Project') {
-      // build project via maven
-      sh "'${mvnHome}/bin/mvn' -Dmaven.test.failure.ignore clean package"
-    }
-	
-	stage('Publish Tests Results'){
-      parallel(
-        publishJunitTestsResultsToJenkins: {
-          echo "Publish junit Tests Results"
-		  junit '**/target/surefire-reports/TEST-*.xml'
-		  archive 'target/*.jar'
-        },
-        publishJunitTestsResultsToSonar: {
-          echo "This is branch b"
-      })
-    }
-		
-    stage('Build Docker Image') {
-      // build docker image
-      sh "whoami"
-      //sh "ls -all /var/run/docker.sock"
-      sh "mv ./target/hello*.jar ./data" 
-      
-      dockerImage = docker.build("hello-world-java")
-    }
-   
-    stage('Deploy Docker Image'){
-      
-      // deploy docker image to nexus
+  environment {
+    IMAGE = 'satvikahuja13/hello-world-java'     // your Docker Hub repo
+    TAG   = "${env.BUILD_NUMBER}"                // unique tag per build
+    KUBECONFIG = '/var/jenkins_home/.kube/config'
+  }
 
-      echo "Docker Image Tag Name: ${dockerImageTag}"
+  options {
+    timestamps()
+  }
 
-      sh "docker login -u admin -p admin123 ${dockerRepoUrl}"
-      sh "docker tag ${dockerImageName} ${dockerImageTag}"
-      sh "docker push ${dockerImageTag}"
+  stages {
+    stage('Checkout') {
+      steps {
+        // use YOUR fork
+        git url: 'https://github.com/satvikahuja/docker-hello-world-spring-boot.git',
+            branch: 'master'
+      }
     }
+
+    stage('Docker Build') {
+      steps {
+        // pre-pull bases (helps when registry is flaky) + retry the build once
+        sh '''
+          set -eux
+          docker pull eclipse-temurin:11-jre-jammy || true
+          docker pull maven:3.8.5-openjdk-11 || true
+        '''
+        retry(2) {
+          sh '''
+            set -eux
+            docker build --pull --no-cache -t "$IMAGE:$TAG" .
+            docker images | head -n 10
+          '''
+        }
+      }
+    }
+
+    stage('Docker Push') {
+      steps {
+        sh '''
+          set -eux
+          docker push "$IMAGE:$TAG"
+        '''
+      }
+    }
+
+    stage('Deploy to Kubernetes (minikube)') {
+      steps {
+        sh '''
+          set -eux
+          export KUBECONFIG="${KUBECONFIG}"
+
+          # create deployment/service if missing (idempotent), else roll image
+          if ! kubectl get deploy hello-spring >/dev/null 2>&1; then
+            kubectl create deployment hello-spring --image="$IMAGE:$TAG" --port=8080
+            kubectl expose deployment hello-spring --type=NodePort --port=8080 || true
+          else
+            kubectl set image deploy/hello-spring "*=$IMAGE:$TAG"
+          fi
+
+          # wait for rollout
+          kubectl rollout status deployment/hello-spring --timeout=180s
+
+          # show current state
+          kubectl get deploy hello-spring -o wide
+          kubectl get svc hello-spring -o wide
+
+          # print a URL to test
+          NODE_PORT=$(kubectl get svc hello-spring -o jsonpath='{.spec.ports[0].nodePort}')
+          NODE_IP=$(kubectl get node -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+          echo "App should be reachable at: http://$NODE_IP:$NODE_PORT"
+          echo "Try: curl http://$NODE_IP:$NODE_PORT"
+        '''
+      }
+    }
+  }
+
+  post {
+    always {
+      echo "Build URL: ${env.BUILD_URL}"
+    }
+  }
 }
