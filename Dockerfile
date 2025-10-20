@@ -1,21 +1,21 @@
 # ---- build stage ----
 FROM maven:3.8.5-openjdk-11 AS maven_build
-WORKDIR /app
+WORKDIR /tmp
 
-# Cache dependencies
-COPY pom.xml .
-RUN mvn -B -ntp -DskipTests dependency:go-offline
+# copy sources
+COPY pom.xml /tmp/
+COPY src /tmp/src/
 
-# Build sources
-COPY src ./src
-RUN mvn -B -ntp -DskipTests package
+# build the fat jar
+RUN mvn package
 
 # ---- runtime stage ----
-FROM eclipse-temurin:11
+# use a stable, smaller JRE image (avoids flaky "manifests 11" pulls)
+FROM eclipse-temurin:11-jre-jammy
 WORKDIR /data
 
-# Copy *whatever* jar Maven built and give it a stable name
-COPY --from=maven_build /app/target/*.jar /data/app.jar
+# copy the built jar from the builder stage
+COPY --from=maven_build /tmp/target/hello-world-0.1.0.jar /data/hello-world-0.1.0.jar
 
 EXPOSE 8080
-CMD ["java", "-jar", "/data/app.jar"]
+ENTRYPOINT ["java","-jar","/data/hello-world-0.1.0.jar"]
